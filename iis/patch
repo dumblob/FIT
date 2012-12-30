@@ -1,0 +1,297 @@
+diff -urN final_old/classes/formparser/librarians.class.php final/classes/formparser/librarians.class.php
+--- final_old/classes/formparser/librarians.class.php	2012-12-09 18:14:03.000000000 +0100
++++ final/classes/formparser/librarians.class.php	2012-12-30 22:01:34.000000000 +0100
+@@ -20,7 +20,7 @@
+ 			{
+ 				$this->error .= 'Nezadali jste datum narození!<br />';
+ 			}
+-			else if (Common::checkStrDate($this->formdata['librarian_birthday']))
++			else if (!Common::checkStrDate($this->formdata['librarian_birthday']))
+ 			{
+ 				$this->error .= 'Zadali jste neplatné datum narození!<br />';
+ 			}
+@@ -115,7 +115,7 @@
+ 		{
+ 			if ($this->dbc->execute(
+ 				"UPDATE librarian SET librarian_birthnumber = ".$this->dbc->sql_string($this->formdata['librarian_birthnumber']).
+-				", librarian_birthday = ".$this->dbc->sql_string(Common::getDBDateFromStrDate($this->formdata['librarian_birthday']).
++				", librarian_birthday = ".$this->dbc->sql_string(Common::getDBDateFromStrDate($this->formdata['librarian_birthday'])).
+ 				", librarian_name = ".$this->dbc->sql_string($this->formdata['librarian_name']).
+ 				", librarian_surname = ".$this->dbc->sql_string($this->formdata['librarian_surname']).
+ 				", librarian_addr = ".$this->dbc->sql_string($this->formdata['librarian_addr']).
+@@ -124,7 +124,7 @@
+ 				", librarian_email = ".$this->dbc->sql_string($this->formdata['librarian_email']).
+ 				", librarian_login = ".$this->dbc->sql_string($this->formdata['librarian_login']).
+ 				", librarian_pass = PASSWORD(".$this->dbc->sql_string($this->formdata['librarian_pass']).")".
+-				" WHERE librarian_id = {$this->formdata['librarian_id']}")))
++				" WHERE librarian_id = {$this->formdata['librarian_id']}"))
+ 			{
+ 				return true;
+ 			}
+diff -urN final_old/classes/formparser/titles.class.php final/classes/formparser/titles.class.php
+--- final_old/classes/formparser/titles.class.php	2012-12-10 16:26:48.000000000 +0100
++++ final/classes/formparser/titles.class.php	2012-12-30 22:01:34.000000000 +0100
+@@ -845,6 +845,24 @@
+ 			
+ 			$loanperiod = intval($stmt->fetch_single());
+ 			
++			if (!($stmt = $this->dbc->query("SELECT title_copycountavail FROM title WHERE title_id = {$this->formdata['title_id']}")))
++			{
++				$this->error .= 'Nepodařilo se získat potřebná data z databáze!<br />';
++				
++				return false;
++			}
++			
++			$copycountavail = intval($stmt->fetch_single());
++			
++			if (!($stmt = $this->dbc->query("SELECT COUNT(*) FROM reservation WHERE title_id = {$this->formdata['title_id']}")))
++			{
++				$this->error .= 'Nepodařilo se získat potřebná data z databáze!<br />';
++				
++				return false;
++			}
++			
++			$reservation_count = intval($stmt->fetch_single());
++			
+ 			if (!($stmt = $this->dbc->query("SELECT reader_id FROM reader WHERE reader_ticket = {$this->formdata['reader_ticket']}")))
+ 			{
+ 				$this->error .= 'Zadali jste číslo průkazu neexistujícího čtenáře!<br />';
+@@ -862,9 +880,8 @@
+ 				{
+ 					$reserved = true;
+ 				}
+-				else
++				else if ($copycountavail <= $reservation_count)
+ 				{
+-					// TODO: ale mel by se kontrolovat i pocet dostupnych vitisku a toto pravidlo by melo platit az kdyz je pocet vytisku mensi nez pocet rezervaci
+ 					$this->error .= 'Titul má rezervovaný jiný čtenář!<br />';
+ 					
+ 					return false;
+@@ -885,15 +902,8 @@
+ 				}
+ 			}
+ 			
+-			// TODO: jeste by tu melo byt prepocitavani terminu rezervaci
+-			// vytahnu vsechny rezervace na titul serazene podle data jejich vytvoreni
+-			// a cyklem vsem zmenim reservation_to
+-			// prvnimu to bude NOW() + $loanperiod + 7
+-			// dalsimu vzdy n * ($loanperiod + 7),
+-			// protoze ten, kdo si vypujcil, mel na vraceni $loanperiod a dalsi ma na vypujceni 7 dnu
+-			// lepsi algoritmus by byl, kdyby se to jeste rozdelovalo podle poctu dostupnych vytisku
+-			// tzn. ze pri dvou dostupnych by pro prvni dve rezervace bylo reservation_to stejne,
+-			// pak pro dalsi dva navysene n-krat atd.
++			// posunout terminy rezervaci
++			$this->shiftReservations($loanperiod);
+ 			
+ 			if (!$this->dbc->execute("INSERT INTO borrow VALUES (NULL, NOW(), NOW() + INTERVAL $loanperiod DAY, {$this->formdata['copy_id']}, $reader_id, {$this->librarian})"))
+ 			{
+@@ -928,7 +938,8 @@
+ 				return false;
+ 			}
+ 			
+-			// TODO: prepocitat rezervace, podobnym algoritmem, vlastne asi stejnym, jen je to interpretovano 7 + $loanperiod
++			// posunout terminy rezervaci
++			$this->shiftReservations($loanperiod);
+ 			
+ 			if (!$this->dbc->execute("UPDATE title SET title_copycountavail = IF(title_copycountavail < title_copycount, (title_copycountavail + 1), title_copycountavail) WHERE title_id = {$this->formdata['title_id']}"))
+ 			{
+@@ -949,9 +960,16 @@
+ 				return false;
+ 			}
+ 			
+-			// TODO: rezervace vzdy bude datum reservation_to posledniho + $loanperiod + 7
+-			// takze si musim vytahnout datum reservation_to posledniho
+-			if (!$this->dbc->execute("INSERT INTO reservation VALUES (NULL, NOW(), NOW(), NOW() + INTERVAL 7 DAY, {$this->formdata['title_id']}, {$this->formdata['reader_id']})"))
++			if ($stmt = $this->dbc->query("SELECT reservation_date FROM reservation WHERE title_id = {$this->formdata['title_id']} AND reader_id = {$this->formdata['reader_id']} ORDER BY reservation_date DESC LIMIT 1"))
++			{
++				$reservation_to = '\''.$stmt->fetch_single().'\' + INTERVAL 7 DAY';
++			}
++			else
++			{
++				$reservation_to = 'NOW() + INTERVAL 7 DAY';
++			}
++			
++			if (!$this->dbc->execute("INSERT INTO reservation VALUES (NULL, NOW(), NOW(), $reservation_to, {$this->formdata['title_id']}, {$this->formdata['reader_id']})"))
+ 			{
+ 				$this->error .= 'Nepodařilo se vložit data do databáze!<br />';
+ 				
+@@ -965,6 +983,49 @@
+ 		{
+ 			$this->dbc->execute("DELETE FROM reservation WHERE reservation_id = {$this->formdata['reservation_id']}");
+ 		}
++		
++		private function shiftReservations($loanperiod)
++		{
++			// vytahnu vsechny rezervace na titul serazene podle data jejich vytvoreni
++			// a cyklem vsem zmenim reservation_to
++			// prvnimu to bude NOW() + $loanperiod + 7
++			// dalsimu vzdy NOW() + n * ($loanperiod + 7),
++			// protoze ten, kdo si vypujcil, mel na vraceni $loanperiod a dalsi ma na vypujceni 7 dnu
++			// lepsi algoritmus by byl, kdyby se to jeste rozdelovalo podle poctu dostupnych vytisku
++			// tzn. ze pri dvou dostupnych by pro prvni dve rezervace bylo reservation_to stejne,
++			// pak pro dalsi dva navysene n-krat atd.
++			
++			if (!($stmt = $this->dbc->query("SELECT title_copycount FROM title WHERE title_id = {$this->formdata['title_id']}")))
++			{
++				$this->error .= 'Nepodařilo se získat potřebná data z databáze!<br />';
++				
++				return false;
++			}
++			
++			$copycount = intval($stmt->fetch_single());
++			
++			if ($stmt = $this->dbc-query("SELECT * FROM reservation WHERE title_id = {$this->formdata['title_id']} ORDER BY reservation_date"))
++			{
++				$rows = $stmt->fetch_all_array();
++				
++				$i = 1;
++				$n = 1;
++				
++				foreach ($rows as $row)
++				{
++					$reservation_to = $n * ($loanperiod + 7);
++					
++					$this->dbc->execute("UPDATE reservation SET reservation_from = NOW(), reservation_to = (NOW() + $reservation_to) WHERE reservation_id = {$row['reservation_id']}");
++					
++					if (($i % $copycount) == 0)
++					{
++						$n++;
++					}
++					
++					$i++;
++				}
++			}
++		}
+ 	}
+ 
+ ?>
+diff -urN final_old/classes/utilities/common.class.php final/classes/utilities/common.class.php
+--- final_old/classes/utilities/common.class.php	2012-12-10 18:52:36.000000000 +0100
++++ final/classes/utilities/common.class.php	2012-12-30 22:01:34.000000000 +0100
+@@ -188,19 +188,19 @@
+ 	{
+ 		$date = str_replace(' ', '', $date);
+ 		
+-		if (strpos('.', $date))
++		if (strpos($date, '.'))
+ 		{
+ 			$delimiter = '.';
+ 		}
+-		else if (strpos('/', $date))
++		else if (strpos($date, '/'))
+ 		{
+ 			$delimiter = '/';
+ 		}
+-		else if (strpos('\\', $date))
++		else if (strpos($date, '\\'))
+ 		{
+ 			$delimiter = '\\';
+ 		}
+-		else if (strpos('-', $date))
++		else if (strpos($date, '-'))
+ 		{
+ 			$delimiter = '-';
+ 		}
+diff -urN final_old/formactions.php final/formactions.php
+--- final_old/formactions.php	2012-12-09 18:14:03.000000000 +0100
++++ final/formactions.php	2012-12-30 22:01:34.000000000 +0100
+@@ -300,6 +300,8 @@
+ 				{
+ 					$result['error'] = 'Nepodařilo se data uložit do databáze!\nZkuste prosím akci zopakovat.\n';
+ 				}
++				
++				$dbc->execute("UPDATE title SET title_copycount = (title_copycount + 1), title_copycountavail = (title_copycountavail + 1) WHERE title_id = {$_GET['title_id']}");
+ 			}
+ 			
+ 			if ($result['error'] == '')
+diff -urN final_old/include/content/tituly.inc final/include/content/tituly.inc
+--- final_old/include/content/tituly.inc	2012-12-09 18:14:03.000000000 +0100
++++ final/include/content/tituly.inc	2012-12-30 22:01:34.000000000 +0100
+@@ -33,15 +33,35 @@
+ 		{
+ 			$titles->setToLibrarian($_SESSION['user_id']);
+ 			
+-			if ($titles->borrowCopy())
++			$refreshed = false;
++			
++			if (isset($_SESSION['action']) && isset($_SESSION['id']) && isset($_SESSION['copy_id']))
+ 			{
+-				$_GET['action'] = 'show';
+-				$_GET['id'] = $titles->getFormDataItem('title_id');
++				if ($_SESSION['id'] == $titles->getFormDataItem('title_id') && $_SESSION['copy_id'] == $titles->getFormDataItem('copy_id'))
++				{
++					$refreshed = true;
++				}
++				
++				if ($_SESSION['action'] == 'return')
++				{
++					$refreshed = false;
++				}
+ 			}
+-			else
++			
++			$_GET['action'] = 'borrow';
++			
++			if (!$refreshed)
+ 			{
+-				$_GET['action'] = 'borrow';
++				if ($titles->borrowCopy())
++				{
++					$_GET['action'] = 'show';
++					$_GET['id'] = $titles->getFormDataItem('title_id');
++				}
+ 			}
++			
++			$_SESSION['action'] = 'borrow';
++			$_SESSION['id'] = $titles->getFormDataItem('title_id');
++			$_SESSION['copy_id'] = $titles->getFormDataItem('copy_id');
+ 		}
+ 	}
+ 	
+@@ -74,9 +94,31 @@
+ 	}
+ 	else if ($_GET['action'] == 'return')
+ 	{
+-		$titles->setFormDataItem('title_id', $_GET['id']);
+-		$titles->setFormDataItem('copy_id', $_GET['copy_id']);
+-		$titles->returnCopy();
++		$refreshed = false;
++		
++		if (isset($_SESSION['action']) && isset($_SESSION['id']) && isset($_SESSION['copy_id']))
++		{
++			if ($_SESSION['id'] == $_GET['id'] && $_SESSION['copy_id'] == $_GET['copy_id'])
++			{
++				$refreshed = true;
++			}
++			
++			if ($_SESSION['action'] == 'borrow')
++			{
++				$refreshed = false;
++			}
++		}
++		
++		if (!$refreshed)
++		{
++			$titles->setFormDataItem('title_id', $_GET['id']);
++			$titles->setFormDataItem('copy_id', $_GET['copy_id']);
++			$titles->returnCopy();
++		}
++		
++		$_SESSION['action'] = $_GET['action'];
++		$_SESSION['id'] = $_GET['id'];
++		$_SESSION['copy_id'] = $_GET['copy_id'];
+ 		
+ 		$showtitles = true;
+ 	}
+diff -urN final_old/script/formactions.js final/script/formactions.js
+--- final_old/script/formactions.js	2012-12-09 18:14:03.000000000 +0100
++++ final/script/formactions.js	2012-12-30 22:01:34.000000000 +0100
+@@ -14,7 +14,7 @@
+ 			$.ajax(
+ 	        {
+ 	            type: 'GET',
+-	            url: '/formactions.php',
++	            url: 'formactions.php',
+ 	            data: params,
+ 	            async: false,
+ 	            dataType: 'json',
